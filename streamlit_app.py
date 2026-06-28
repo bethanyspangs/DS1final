@@ -18,11 +18,13 @@ st.set_page_config(
 )
 
 
-df = pd.read_csv(
-    "https://docs.google.com/spreadsheets/d/1E-64FAAWIx8apAY1mFqt5hwb_xRAOyG-PhUhDFL2BBY/edit?usp=sharing",
-    encoding="latin-1",
-    thousands=","
-)
+CSV_URL = "https://docs.google.com/spreadsheets/d/1E-64FAAWIx8apAY1mFqt5hwb_xRAOyG-PhUhDFL2BBY/export?format=csv"
+
+@st.cache_data
+def get_olympic_data():
+    return pd.read_csv(CSV_URL, encoding="latin-1", thousands=",")
+
+df = get_olympic_data()
 
 
 ##title page

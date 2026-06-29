@@ -8,6 +8,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_absolute_error
 from sklearn.ensemble import RandomForestRegressor
+from shapash import SmartExplainer
+import wandb
 
 
 ## logo and url name
@@ -17,9 +19,7 @@ st.set_page_config(
     page_icon="🌎",
 )
 
-
 CSV_URL = "https://docs.google.com/spreadsheets/d/1E-64FAAWIx8apAY1mFqt5hwb_xRAOyG-PhUhDFL2BBY/export?format=csv"
-
 @st.cache_data
 def get_olympic_data():
     return pd.read_csv(CSV_URL, encoding="latin-1", thousands=",")
@@ -29,7 +29,7 @@ df = get_olympic_data()
 
 ##title page
 st.markdown("<h1 style='text-align: center; color: white;'>🏆 The Olympic Games Explorer🌎</h1>", unsafe_allow_html=True)
-page = st.sidebar.selectbox("Select Page", ["Introduction💻", "Data Visualization💡", "Prediction🎯", "Feature importance🤝", "best performing model✅", "Conclusion📊"])
+page = st.sidebar.selectbox("Select Page", ["Introduction💻", "Data Visualization💡", "Prediction🎯", "Explainability🤝", "Best performing model✅", "Conclusion📊"])
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
     st.image("images.png")
@@ -331,22 +331,16 @@ if page == "Prediction🎯":
 
 
 
-if page == "Feature importance🤝":
+if page == "Explainability🤝":
     st.title("🤝 Feature Importance and Driving Variables")
-
-
-   
+    st.markdown('### <span style="background-color: white; color: black; padding: 2px 8px; border-radius: 4px;">🔍 AI Explainability with Shapash</span>', unsafe_allow_html=True)
     st.write(
-        "#### Why do models pick certain winners? "
-        "Let's break down the mathematical global weights using **Shapash Explainable AI (XAI)**."
-        "This page explains which variables appear to drive Olympic medal performance."
-        " The goal is to understand whether host-country status is an important factor compared with other variables like year, number of athletes, and number of events."
+        "While standard feature diagnostics tell us which variables matter overall, Shapash Explainable AI (XAI) "
+        "calculates the exact mathematical contribution of each feature. This helps us understand precisely "
+        "how our Random Forest and linear regression models make individual predictions."
     )
-
-
     medal_df = df[df['Medal'].notna()].copy()
     medal_df = medal_df.drop_duplicates(subset=['Team', 'NOC', 'Games', 'Year', 'Season', 'City', 'Sport', 'Event', 'Medal'])
-
 
     host_mapping = {
         (2016, 'Rio de Janeiro'): 'BRA', (2012, 'London'): 'GBR', (2008, 'Beijing'): 'CHN',
@@ -355,211 +349,224 @@ if page == "Feature importance🤝":
         (1980, 'Moskva'): 'URS', (1976, 'Montreal'): 'CAN',
     }
 
-
     def is_host(row):
         return 1 if host_mapping.get((row['Year'], row['City'])) == row['NOC'] else 0
 
-
     medal_df['Is_Host'] = medal_df.apply(is_host, axis=1)
-   
     summer_medals = medal_df[medal_df['Season'] == 'Summer']
     simple_medals = summer_medals.groupby(['Year', 'City', 'NOC', 'Is_Host']).size().reset_index(name='Medal_Count')
-   
+    
     ml_data = simple_medals.sort_values(by=['NOC', 'Year'])
     ml_data['Prev_Medal_Count'] = ml_data.groupby('NOC')['Medal_Count'].shift(1)
     ml_data = ml_data.dropna()
-
 
     X = ml_data[['Prev_Medal_Count', 'Is_Host']]
     y = ml_data['Medal_Count']
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-
-    from sklearn.ensemble import RandomForestRegressor
+    # 2. Retrain the baseline Random Forest
     model_rf = RandomForestRegressor(n_estimators=100, random_state=42)
     model_rf.fit(X_train, y_train)
 
+    # 3. Setup and compile Shapash SmartExplainer Sandbox
+    xpl = SmartExplainer(
+        model=model_rf,
+        features_dict={
+            'Prev_Medal_Count': 'Previous Olympics Medal Haul',
+            'Is_Host': 'Hosting Status'
+        }
+    )
+    xpl.compile(x=X_test, y_target=y_test)
 
-    # =============================================================
-    # 2. COMPUTE PERMUTATION IMPORTANCE (No SHAP required!)
-    # =============================================================
-    from sklearn.inspection import permutation_importance
-    import matplotlib.pyplot as plt
 
+    st.markdown('### <span style="background-color: white; color: black; padding: 2px 8px; border-radius: 4px;">🌐Feature Significance</span>', unsafe_allow_html=True)
+    st.write("This interactive chart breaks down how heavily the model relies on each variable across the entire dataset.")
+    fig1 = xpl.plot.features_importance()
+    st.plotly_chart(fig1, use_container_width=True)
+    st.info("As you can see, the two most important driving variables to predict a countries medal count for a future Olympic are their medal count in the previous Olympics and if they are hosting or not.")
 
-    st.write("---")
-    st.subheader("🌐 Global Feature Importance Breakdown")
+    st.markdown('### <span style="background-color: white; color: black; padding: 2px 8px; border-radius: 4px;">📈 Local Feature Contribution Dynamics</span>', unsafe_allow_html=True)
     st.write(
-        "This diagnostic shuffles each feature column individually and evaluates how much the model's accuracy drops. "
-        "A higher drop means the model relies heavily on that specific variable to make accurate predictions."
+        "This scatter plot highlights the exact mathematical trend: as a country's historical "
+        "medal haul increases, look at how sharply the model scales up its future predictions."
     )
+    fig2 = xpl.plot.contribution_plot('Prev_Medal_Count')
+    st.plotly_chart(fig2, use_container_width=True)
 
-
-    # Calculate permutation importance on the test set
-    result = permutation_importance(model_rf, X_test, y_test, n_repeats=10, random_state=42)
-   
-    feature_names = ['Previous Olympics Medal Haul', 'Home-Field Advantage (Hosting Status)']
-    importances = result.importances_mean
-
-
-    # Plot using Matplotlib
-    fig, ax = plt.subplots(figsize=(8, 3.5))
-    colors = ['#367ee2', '#7aaef5']
-    bars = ax.barh(feature_names, importances, color=colors, height=0.5)
-    ax.set_xlabel("Decrease in Model Score Accuracy ($R^2$)")
-    ax.set_title("Permutation Feature Importance (Random Forest)")
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-   
-    # Add values to the bars
-    for bar in bars:
-        width = bar.get_width()
-        ax.text(width + 0.01, bar.get_y() + bar.get_height()/2, f'{width:.3f}',
-                va='center', ha='left', fontsize=10, fontweight='bold')
-
-
-    plt.tight_layout()
-    st.pyplot(fig)
-
-
-    # Structured Project Conclusion Insights
-    st.write("---")
-    st.markdown("### 🧠 Key Data Science Takeaways")
-    st.markdown(
+    st.info(
         """
-        * **The Dominant Baseline Factor:** The *Previous Olympics Medal Haul* has the highest global importance score. Shuffling this feature causes a massive drop in predictive power, proving historical momentum dictates future counts.
-        * **The Hosting Catalyst Bonus:** While hosting status ranks lower overall (since only one country hosts per cycle), it still provides a clear, measurable accuracy weight to the model when active.
+        * **Driving variable:** The *Previous Olympics Medal Haul* exhibits dominant predictive weights. A country's number of athletes and success in certain events is the primary driver of future success.
+        * **Hosting Bonus:** Even though hosting status acts on a much narrower subset of rows (since only one team hosts per cycle), Shapash isolated a visible baseline acceleration effect when `Home-Field Advantage` changes from 0 to 1.
         """
     )
 
 
 
-
-    st.write("""
-    The larger the importance value, the more strongly that variable influences the model's medal prediction.
-    In this model, variables like number of athletes, events entered, and sports entered may be major drivers
-    because countries with larger Olympic teams have more chances to win medals.
-
-
-    Host-country status is included to test whether competing at home gives a measurable advantage.
-    If host-country status has a meaningful importance score, it suggests that hosting may contribute
-    to stronger Olympic performance.
-    """)
-
-
-
-
-if page == "best performing model✅":
+if page == "Best performing model✅":
     st.title("✅ Best Performing Model and Hyperparameter Tuning")
 
-
-    st.write("""
-    This page compares different model settings to identify which one performs best.
-    The goal is to predict the number of medals won by each country based on Olympic participation variables.
-    """)
-
-
-    medal_df = df[df["Medal"].notna()].copy()
-    medal_df = medal_df.drop_duplicates(
-        subset=["Team", "NOC", "Games", "Year", "Season", "City", "Sport", "Event", "Medal"]
-    )
-
-
     host_mapping = {
-        (2016, "Rio de Janeiro"): "BRA",
-        (2012, "London"): "GBR",
-        (2008, "Beijing"): "CHN",
-        (2004, "Athina"): "GRE",
-        (2000, "Sydney"): "AUS",
-        (1996, "Atlanta"): "USA",
-        (1992, "Barcelona"): "ESP",
-        (1988, "Seoul"): "KOR",
-        (1984, "Los Angeles"): "USA",
-        (1980, "Moskva"): "URS",
-        (1976, "Montreal"): "CAN",
+        (2016, 'Rio de Janeiro'): 'BRA', (2012, 'London'): 'GBR', (2008, 'Beijing'): 'CHN',
+        (2004, 'Athina'): 'GRE', (2000, 'Sydney'): 'AUS', (1996, 'Atlanta'): 'USA',
+        (1992, 'Barcelona'): 'ESP', (1988, 'Seoul'): 'KOR', (1984, 'Los Angeles'): 'USA',
+        (1980, 'Moskva'): 'URS', (1976, 'Montreal'): 'CAN',
     }
 
+    st.markdown('### <span style="background-color: white; color: black; padding: 2px 8px; border-radius: 4px;">Track, optimize, and lock in the best-performing predictive configuration.</span>', unsafe_allow_html=True)
+    wandb_key = st.text_input("Enter W&B API Key", type="password")
 
+    
+    medal_df = df[df["Medal"].notna()].copy()
+    medal_df = medal_df.drop_duplicates(subset=["Team", "NOC", "Games", "Year", "Season", "City", "Sport", "Event", "Medal"])
+    
     def is_host(row):
         return 1 if host_mapping.get((row["Year"], row["City"])) == row["NOC"] else 0
-
-
+    
     medal_df["host_country"] = medal_df.apply(is_host, axis=1)
-
-
     team_year = medal_df.groupby(["Year", "NOC", "Team", "Season"]).agg(
         medals_won=("Medal", "count"),
         host_country=("host_country", "max"),
         sports_entered=("Sport", "nunique"),
         events_entered=("Event", "nunique")
     ).reset_index()
-
-
-    athletes = df.groupby(["Year", "NOC"]).agg(
-        athlete_count=("ID", "nunique")
-    ).reset_index()
-
-
-    model_df = team_year.merge(athletes, on=["Year", "NOC"], how="left")
-    model_df = model_df.dropna()
-
+    
+    athletes = df.groupby(["Year", "NOC"]).agg(athlete_count=("ID", "nunique")).reset_index()
+    model_df = team_year.merge(athletes, on=["Year", "NOC"], how="left").dropna()
 
     X = model_df[["host_country", "Year", "sports_entered", "events_entered", "athlete_count"]]
     y = model_df["medals_won"]
 
+    st.markdown("### 🎛️ Tweak Random Forest Hyperparameters")
+    col_t1, col_t2, col_t3 = st.columns(3)
+    with col_t1:
+        n_estimators = st.slider("Number of Trees (n_estimators)", 10, 200, 100, 10)
+    with col_t2:
+        max_depth = st.slider("Max Tree Depth (max_depth)", 2, 20, 10, 1)
+    with col_t3:
+        test_size = st.slider("Validation Test Split Size", 0.1, 0.5, 0.2, 0.05)
 
-    test_size = st.slider("Choose test size", 0.1, 0.5, 0.2, 0.05)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
 
+    if st.button("🚀 Run Tuning Experiment & Log Metrics"):
+        if not wandb_key:
+            st.warning("⚠️ Please provide a W&B API Key in the sidebar to sync with the cloud board! Running local tracking baseline instead.")
+        else:
+            wandb.login(key=wandb_key)
+            wandb.init(project="olympic-medal-predictor", config={
+                "n_estimators": n_estimators,
+                "max_depth": max_depth,
+                "test_size": test_size,
+                "model_type": "RandomForestRegressor"
+            })
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=42
+        tuned_rf = RandomForestRegressor(n_estimators=n_estimators, max_depth=max_depth, random_state=42)
+        tuned_rf.fit(X_train, y_train)
+        preds = tuned_rf.predict(X_test)
+        r2 = r2_score(y_test, preds)
+        mae = mean_absolute_error(y_test, preds)
+
+        if wandb_key:
+            wandb.log({"R2_Score": r2, "MAE": mae})
+            wandb.finish()
+            st.success("🎉 Run successfully sent to your Weights & Biases Dashboard project board!")
+
+        st.write("---")
+        st.subheader("📊 Current Experiment Yield Outcomes")
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            st.metric(label="R² Explanatory Variance Score", value=f"{r2:.4f}")
+        with col_r2:
+            st.metric(label="Mean Absolute Error (MAE)", value=f"{mae:.2f} Medals")
+
+        if r2 > 0.75:
+            st.success("🔥 Outstanding Performance configuration profile!")
+        else:
+            st.info("💡 Tip: Try dialing up the Number of Trees or extending Max Depth properties to improve data feature fitting variance.")
+    st.write(""" #### Ultimately, this page is finding the "sweet spot" to accurately forecast Olympic success. By adjusting the sliders above, you are controlling exactly how the Random Forest algorithm analyzes historical Olympic data to predict a country's total Medal Count.""")
+    
+if page == "Conclusion📊":
+
+    st.title("📊 Conclusion")
+
+    st.markdown(
+        '<h3 style="background-color:white; color:black; padding:8px; border-radius:5px;">Final Project Summary</h3>',
+        unsafe_allow_html=True
     )
 
-
-    model = LinearRegression()
-    model.fit(X_train, y_train)
-
-
-    predictions = model.predict(X_test)
-
-
-    r2 = r2_score(y_test, predictions)
-    mae = mean_absolute_error(y_test, predictions)
-
-
-    results_df = pd.DataFrame({
-        "Model": ["Linear Regression"],
-        "Test Size": [test_size],
-        "R² Score": [r2],
-        "Mean Absolute Error": [mae]
-    })
-
-
-    st.subheader("Model Performance Results")
-    st.dataframe(results_df)
-
-
-    st.write(f"### R² Score: {r2:.3f}")
-    st.write(f"### Mean Absolute Error: {mae:.3f}")
-
-
-    if r2 > 0.7:
-        st.success("This model performs well and explains a strong amount of variation in medal counts.")
-    elif r2 > 0.4:
-        st.warning("This model has moderate performance. It explains some medal trends, but there is room for improvement.")
-    else:
-        st.error("This model has weaker performance, meaning Olympic medal outcomes are likely influenced by more variables.")
-
-
     st.write("""
-    Based on the tuning experiment, the best-performing model is selected by comparing the R² score
-    and Mean Absolute Error. A higher R² score means the model explains more of the variation in medal counts,
-    while a lower Mean Absolute Error means the model's predictions are closer to the actual medal totals.
+    Throughout this project we analyzed more than 100 years of Olympic history to determine
+    whether hosting the Olympic Games gives countries a competitive advantage.
+
+    By combining historical data, machine learning, explainable AI, and hyperparameter tuning,
+    we were able to better understand the factors that influence Olympic medal success.
     """)
 
+    st.divider()
 
-if page == "Conclusion📊":
-    st.title("Conclusion📊")
-    st.write(" ### ")
+    st.subheader("🏆 Key Findings")
 
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Main Predictor", "Previous Medal Count")
+
+    with col2:
+        st.metric("Hosting Effect", "Positive Advantage")
+
+    with col3:
+        st.metric("Best Model", "Random Forest")
+
+    st.info("""
+    Countries that performed well in the previous Olympics were the most likely to perform
+    well again. Hosting the Olympics also provided a measurable increase in medal production,
+    although its impact was smaller than historical performance.
+    """)
+
+    st.divider()
+
+    st.subheader("🤖 Machine Learning Summary")
+
+    summary = pd.DataFrame({
+        "Model": ["Linear Regression", "Random Forest"],
+        "Strengths": [
+            "Simple, interpretable baseline",
+            "Captures complex relationships"
+        ],
+        "Overall Performance": [
+            "Good",
+            "Best"
+        ]
+    })
+
+    st.dataframe(summary, use_container_width=True)
+
+    st.divider()
+
+    st.subheader("💡 Future Improvements")
+
+    st.write("""
+    Future versions of this project could improve prediction accuracy by including:
+
+    • GDP and country population
+
+    • Number of athletes competing
+
+    • Athlete world rankings
+
+    • Olympic funding and investment
+
+    • Home crowd attendance
+
+    • Qualification statistics
+
+    • More advanced machine learning models such as XGBoost
+    """)
+
+    st.divider()
+
+    st.success(
+        "Overall, our analysis supports the idea that hosting the Olympic Games provides a competitive advantage, while previous Olympic success remains the strongest predictor of future medal performance."
+    )
+
+    st.balloons()
 
